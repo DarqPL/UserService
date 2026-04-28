@@ -6,6 +6,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.Instant;
+
 @Entity
 @Table(name = "users")
 @Data // Lombok annotation tự động tạo Getter/Setter/ToString
@@ -24,4 +26,9 @@ public class User {
 
     @Enumerated(EnumType.STRING)
     private Role role; // Ví dụ: ROLE_USER, ROLE_ADMIN
+
+    @Column(length = 1000)
+    private String refreshToken;
+
+    private Instant refreshTokenExpiryDate;
 }

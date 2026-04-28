@@ -15,7 +15,10 @@ public class JwtUtils {
     private String jwtSecret;
 
     @Value("${jwt.expirationMs}")
-    private int jwtExpirationMs;
+    private long jwtExpirationMs;
+
+    @Value("${jwt.refreshExpirationMs}")
+    private long jwtRefreshExpirationMs;
 
     // Tạo key từ chuỗi secret
     private SecretKey getSigningKey() {
@@ -29,6 +32,15 @@ public class JwtUtils {
                 .subject(userDetails.getUsername())
                 .issuedAt(new Date())
                 .expiration(new Date((new Date()).getTime() + jwtExpirationMs))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
+    public String generateRefreshToken(UserDetails userDetails) {
+        return Jwts.builder()
+                .subject(userDetails.getUsername())
+                .issuedAt(new Date())
+                .expiration(new Date((new Date()).getTime() + jwtRefreshExpirationMs))
                 .signWith(getSigningKey())
                 .compact();
     }
@@ -58,5 +70,9 @@ public class JwtUtils {
             System.err.println("JWT claims string is empty: " + e.getMessage());
         }
         return false;
+    }
+
+    public long getRefreshTokenExpirationMs() {
+        return jwtRefreshExpirationMs;
     }
 }

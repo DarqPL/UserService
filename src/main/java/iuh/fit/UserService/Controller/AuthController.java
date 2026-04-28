@@ -8,16 +8,24 @@ import iuh.fit.UserService.domain.dto.JwtResponse;
 import iuh.fit.UserService.domain.dto.LoginRequest;
 import iuh.fit.UserService.domain.dto.SignupRequest;
 import iuh.fit.UserService.domain.entity.User;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 
 @RestController
@@ -36,6 +44,9 @@ public class AuthController {
     @Autowired
     private JwtUtils jwtUtils;
 
+    @Autowired
+    private UserDetailsService userDetailsService;
+
     // API Đăng nhập
     @PostMapping("/signin")
     public ResponseEntity<?> authenticateUser(@RequestBody LoginRequest loginRequest) {
@@ -50,11 +61,55 @@ public class AuthController {
         // 3. Tạo JWT token
         UserDetails userDetails = (UserDetails) authentication.getPrincipal();
         String jwt = jwtUtils.generateToken(userDetails);
+        String refreshToken = jwtUtils.generateRefreshToken(userDetails);
+        User user = userRepository.findByUsername(userDetails.getUsername())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        persistRefreshToken(user, refreshToken);
 
         // 4. Lấy Role (giả định User chỉ có 1 role)
         String role = userDetails.getAuthorities().iterator().next().getAuthority();
 
-        return ResponseEntity.ok(new JwtResponse(jwt, userDetails.getUsername(), role));
+        ResponseCookie refreshCookie = buildRefreshCookie(refreshToken);
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshCookie.toString())
+                .body(new JwtResponse(jwt, userDetails.getUsername(), role));
+    }
+
+    @PostMapping("/refresh-token")
+    public ResponseEntity<?> refreshToken(HttpServletRequest request) {
+        String refreshToken = extractRefreshTokenFromCookie(request);
+
+        if (refreshToken == null || !jwtUtils.validateJwtToken(refreshToken)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("message", "Refresh token is invalid or expired"));
+        }
+
+        String username = jwtUtils.getUserNameFromJwtToken(refreshToken);
+        User user = userRepository.findByUsername(username)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (user.getRefreshToken() == null || !user.getRefreshToken().equals(refreshToken)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(Map.of("message", "Refresh token is no longer valid"));
+        }
+
+        if (user.getRefreshTokenExpiryDate() != null && user.getRefreshTokenExpiryDate().isBefore(Instant.now())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(Map.of("message", "Refresh token has expired"));
+        }
+
+        UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+        String newAccessToken = jwtUtils.generateToken(userDetails);
+        String newRefreshToken = jwtUtils.generateRefreshToken(userDetails);
+        persistRefreshToken(user, newRefreshToken);
+        String role = userDetails.getAuthorities().iterator().next().getAuthority();
+
+        ResponseCookie refreshCookie = buildRefreshCookie(newRefreshToken);
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, refreshCookie.toString())
+                .body(new JwtResponse(newAccessToken, userDetails.getUsername(), role));
     }
 
     // API Đăng ký
@@ -74,5 +129,37 @@ public class AuthController {
         userRepository.save(user);
 
         return ResponseEntity.ok(Map.of("message", "User registered successfully!"));
+    }
+
+    private ResponseCookie buildRefreshCookie(String refreshToken) {
+        return ResponseCookie.from("refreshToken", refreshToken)
+                .httpOnly(true)
+                .secure(false)
+                .path("/api/auth")
+                .maxAge(Duration.ofMillis(jwtUtils.getRefreshTokenExpirationMs()))
+                .sameSite("Lax")
+                .build();
+    }
+
+    private String extractRefreshTokenFromCookie(HttpServletRequest request) {
+        Cookie[] cookies = request.getCookies();
+
+        if (cookies == null) {
+            return null;
+        }
+
+        for (Cookie cookie : cookies) {
+            if ("refreshToken".equals(cookie.getName())) {
+                return cookie.getValue();
+            }
+        }
+
+        return null;
+    }
+
+    private void persistRefreshToken(User user, String refreshToken) {
+        user.setRefreshToken(refreshToken);
+        user.setRefreshTokenExpiryDate(Instant.now().plusMillis(jwtUtils.getRefreshTokenExpirationMs()));
+        userRepository.save(user);
     }
 }

@@ -10,6 +10,7 @@ import iuh.fit.UserService.domain.dto.SignupRequest;
 import iuh.fit.UserService.domain.entity.User;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,7 +50,7 @@ public class AuthController {
 
     // API Đăng nhập
     @PostMapping("/signin")
-    public ResponseEntity<?> authenticateUser(@RequestBody LoginRequest loginRequest) {
+    public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest) {
 
         // 1. Xác thực username và password
         Authentication authentication = authenticationManager.authenticate(
@@ -114,21 +115,55 @@ public class AuthController {
 
     // API Đăng ký
     @PostMapping("/signup")
-    public ResponseEntity<?> registerUser(@RequestBody SignupRequest signUpRequest) {
+    public ResponseEntity<?> registerUser(@Valid @RequestBody SignupRequest signUpRequest) {
         // Kiểm tra username đã tồn tại chưa
         if (userRepository.existsByUsername(signUpRequest.getUsername())) {
             return ResponseEntity.badRequest().body(Map.of("message", "Error: Username is already taken!"));
         }
 
+        if (userRepository.existsByEmail(signUpRequest.getEmail())) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Error: Email is already taken!"));
+        }
+
         // Tạo tài khoản mới (Mật khẩu được mã hóa bằng BCrypt)
         User user = new User();
         user.setUsername(signUpRequest.getUsername());
+        user.setEmail(signUpRequest.getEmail());
+        user.setFullName(signUpRequest.getFullName());
+        user.setPhoneNumber(signUpRequest.getPhoneNumber());
         user.setPassword(encoder.encode(signUpRequest.getPassword()));
         user.setRole(signUpRequest.getRole() != null ? signUpRequest.getRole() : Role.USER);
 
         userRepository.save(user);
 
         return ResponseEntity.ok(Map.of("message", "User registered successfully!"));
+    }
+
+    // API Đăng xuất
+    @PostMapping("/signout")
+    public ResponseEntity<?> signOut() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        if (authentication != null && authentication.isAuthenticated()) {
+            String username = authentication.getName();
+            userRepository.findByUsername(username).ifPresent(user -> {
+                user.setRefreshToken(null);
+                user.setRefreshTokenExpiryDate(null);
+                userRepository.save(user);
+            });
+        }
+
+        ResponseCookie clearCookie = ResponseCookie.from("refreshToken", "")
+                .httpOnly(true)
+                .secure(false)
+                .path("/api/auth")
+                .maxAge(0)
+                .sameSite("Lax")
+                .build();
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.SET_COOKIE, clearCookie.toString())
+                .body(Map.of("message", "Dang xuat thanh cong"));
     }
 
     private ResponseCookie buildRefreshCookie(String refreshToken) {
